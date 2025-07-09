@@ -815,7 +815,6 @@ function updateArsonistState(
             if (agent.profile) {
                 firesByProfileThisTick[agent.profile] = (firesByProfileThisTick[agent.profile] || 0) + 1;
             }
-            reportFire(targetCell.x, targetCell.y); // Report fire as soon as it's started by an arsonist
         }
         // On failure, the arsonist doesn't go on cooldown. They can try again next tick.
     } else {
