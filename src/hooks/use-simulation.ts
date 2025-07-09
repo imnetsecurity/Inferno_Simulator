@@ -1132,12 +1132,14 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         let buildingsDestroyedThisStep = 0;
         let casualtiesThisTick = 0;
         let firesExtinguishedThisTick = 0;
-        const firesByProfileThisTick: Partial<Record<ArsonistProfileType, number>> = {};
+		const firesByProfileThisTick: Partial<Record<ArsonistProfileType, number>> = {};
         const newEvents: SimEvent[] = [];
         const newReportedFires = new Set(reportedFires);
         const newClaimedFires = new Set(claimedFires);
         const currentTime = time + 1;
-        console.log(`👨‍🚒 reported fires:`, Array.from(reportedFires));
+
+        // Set to track events added in this tick to prevent duplicates
+        const eventsThisTick = new Set<string>();
 
         const addEvent = (message: string) => {
             newEvents.push({ id: crypto.randomUUID(), timestamp: currentTime, message });
