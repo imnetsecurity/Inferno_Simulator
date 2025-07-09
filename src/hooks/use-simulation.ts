@@ -205,23 +205,21 @@ const findRandomLocation = (grid: Cell[][], filter: (cell: Cell) => boolean): {x
 const calculateAreaRisk = (x: number, y: number, grid: Cell[][]): number => {
     let totalRisk = 0;
     let cellCount = 0;
-    const radius = 10; // Define a radius for area risk assessment (e.g., 10 cells)
+    const radius = config.police_patrol_risk_radius;
 
     for (let dx = -radius; dx <= radius; dx++) {
         for (let dy = -radius; dy <= radius; dy++) {
             const nx = x + dx;
             const ny = y + dy;
-            if (nx >= 0 && nx < config.grid_width && ny >= 0 && ny < config.grid_height) {
+            if (nx >= 0 && nx < config.grid_width && ny >= 0 && ny < config.grid_height && !(dx === 0 && dy === 0)) {
                 const cell = grid[ny]?.[nx];
                 if (cell) {
-                    // Consider arsonRisk, flammability, and negative controls
+                    // Consider arsonRisk, flammability, and controls (both positive and negative impacts)
                     let cellRisk = cell.arsonRisk || 0;
                     cellRisk += cell.flammability * 0.5; // Add flammability as a factor
-                    // Add impact of negative controls
                     for (const key in CONTROL_IMPACTS) {
                          const controlKey = key as keyof typeof CONTROL_IMPACTS;
-                         // Only consider negative controls for increasing risk here
-                         if (CONTROL_IMPACTS[controlKey].risk > 0 && cell[controlKey]) {
+                         if (cell[controlKey]) {
                              cellRisk += CONTROL_IMPACTS[controlKey].risk;
                          }
                     }
@@ -533,7 +531,7 @@ function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], rep
     const currentCell = grid[iy]?.[ix];
     if (agent.state !== 'apprehending' && currentCell && currentCell.fireLevel > 0 && currentCell.fireLevel < 2) { // Check for small fire (level 1)
         agent.state = 'extinguishing_small_fire';
-        agent.state_timer = 2; // Short timer
+        agent.state_timer = config.small_fire_extinguish_timer;
         agent.path = []; // Stop any current movement
         addEvent(`A police officer is attempting to extinguish a small fire at (${ix}, ${iy}).`);
         return; // Police officer is busy
@@ -586,47 +584,44 @@ function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], rep
 
     // Predictive Policing Patrolling: Prioritize high-risk areas
     if (!agent.path || agent.path.length === 0) {
-        let bestDestination: { x: number; y: number } | null = null;
-        let highestRisk = -Infinity;
-        const patrolAreaScanRadius = 30; // Define how far police look for patrol areas
-
-        // Scan a wider area for potential patrol destinations
-        for (let dx = -patrolAreaScanRadius; dx <= patrolAreaScanRadius; dx++) {
-            for (let dy = -patrolAreaScanRadius; dy <= patrolAreaScanRadius; dy++) {
-                const nx = ix + dx;
-                const ny = iy + dy;
-
-                // Ensure the potential destination is within grid bounds and is walkable
-                if (nx >= 0 && nx < config.grid_width && ny >= 0 && ny < config.grid_height && grid[ny]?.[nx] && isWalkable(nx, ny, grid)) {
-                    // Calculate the risk score for this area
-                    const areaRisk = calculateAreaRisk(nx, ny, grid);
-
-                    // With a certain probability, favor higher risk areas
-                    // Using a simple probability based on risk: higher risk = higher chance of being chosen
-                    // Also add a small random chance to explore lower risk areas
-                    const selectionChance = areaRisk * 10 + Math.random() * 0.1; // Adjust multipliers as needed
-
-                    if (selectionChance > highestRisk) {
-                        highestRisk = selectionChance;
-                        bestDestination = { x: nx, y: ny };
-                    }
-                }
+ let bestDestination: { x: number; y: number } | null = null;
+        let highestScore = -Infinity;
+        const patrolAreaScanRadius = config.police_patrol_scan_radius;
+        const numSampleLocations = config.police_patrol_sample_locations;
+        
+        // Sample random locations within the scan radius around the agent
+        const potentialDestinations: {x: number, y: number}[] = [];
+        for(let i = 0; i < numSampleLocations; i++) {
+            const rx = ix + Math.floor(Math.random() * (2 * patrolAreaScanRadius + 1)) - patrolAreaScanRadius;
+            const ry = iy + Math.floor(Math.random() * (2 * patrolAreaScanRadius + 1)) - patrolAreaScanRadius;
+            if (rx >= 0 && rx < config.grid_width && ry >= 0 && ry < config.grid_height && grid[ry]?.[rx] && isWalkable(rx, ry, grid)) {
+                 potentialDestinations.push({x: rx, y: ry});
             }
         }
+
+        // Evaluate sampled locations based on area risk and add some randomness
+        potentialDestinations.forEach(dest => {
+            const areaRisk = calculateAreaRisk(dest.x, dest.y, grid);
+            // Calculate a score: Higher risk (weighted) + some randomness (weighted) = higher chance of selection
+            const score = areaRisk * 100 + Math.random() * 5; // Adjust multipliers (100 and 5) as needed
+
+            if (score > highestScore) {
+                highestScore = score;
+                bestDestination = dest;
+            }
+        });
 
         if (bestDestination) {
             // Find a path to the chosen high-risk area destination
             agent.path = findPathAStar({ x: ix, y: iy }, bestDestination, grid) || [];
-            agent.state = 'patrolling'; // Keep state as patrolling
         } else {
-            // Fallback to a random location if no suitable high-risk area found
+            // Fallback to a random walkable location in the grid if no suitable location found in scan area
              const fallbackDestination = findRandomLocation(grid, (cell) => isWalkable(cell.x, cell.y, grid));
              if (fallbackDestination) {
                  agent.path = findPathAStar({x: ix, y: iy}, fallbackDestination, grid) || [];
-                 agent.state = 'patrolling';
              }
         }
-        agent.state = 'patrolling';
+        agent.state = 'patrolling'; // Keep state as patrolling
     }
 
     // Always report fires
@@ -720,7 +715,7 @@ function updateCivilianBehavior(
     // Handle agent's path completion
     if (agent.path && agent.path.length === 0) {
         if (agent.state === 'going_to_work') { agent.state = 'working'; agent.state_timer = Math.floor(Math.random() * 200) + 100; }
-        else if (agent.state === 'going_home') { agent.state = 'at_home'; agent.state_timer = Math.floor(Math.random() * 200) + 100; }
+        else if (agent.state === 'going_home') { agent.state = 'at_home'; agent.state_timer = Math.floor(Math.random() * 200) + 100; } // Stay home for a while
         else if (agent.state === 'shopping') { agent.state = 'patrolling'; agent.state_timer = Math.floor(Math.random() * 50) + 20; }
         else if (agent.state === 'seeking_shelter') { /* stay there */ }
     }

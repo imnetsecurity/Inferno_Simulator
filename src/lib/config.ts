@@ -232,6 +232,13 @@ export const config = {
     riot_transform_prob_multiplier: 25,
     civilian_to_arsonist_prob_base: 0.00002,
 
+    // Police Patrol Configuration
+    police_patrol_risk_radius: 10, // Radius for calculating area risk for patrolling
+    police_patrol_scan_radius: 30, // Radius around police to scan for potential patrol destinations
+    police_patrol_sample_locations: 20, // Number of locations to sample within scan radius
+    police_patrol_risk_weight: 100, // Multiplier for area risk in patrol destination scoring
+    police_patrol_random_weight: 5, // Multiplier for randomness in patrol destination scoring
+    small_fire_extinguish_timer: 2, // Duration in ticks for extinguishing small fires
     agent_walk_speed: 65.0,
     agent_vehicle_speed: 375.0,
 

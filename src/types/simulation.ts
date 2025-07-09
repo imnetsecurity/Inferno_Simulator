@@ -76,7 +76,8 @@ export type AgentState =
   | 'seeking_shelter'
   | 'shopping'
   // Police
-  | 'apprehending';
+  | 'apprehending'
+  | 'extinguishing_small_fire';
 
 export type RoutineType = 'REGULAR_COMMUTER' | 'STAY_AT_HOME' | 'NIGHT_SHIFT';
 
