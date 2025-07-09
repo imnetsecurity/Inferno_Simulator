@@ -233,6 +233,48 @@ const calculateAreaRisk = (x: number, y: number, grid: Cell[][]): number => {
     return cellCount > 0 ? totalRisk / cellCount : 0;
 };
 
+function calculateNearRepeatRiskGrid(grid: Cell[][], recentFireHistory: {timestamp: number; x: number; y: number}[], currentTime: number): number[][] {
+    const nearRepeatRiskGrid: number[][] = Array(config.grid_height).fill(0).map(() => Array(config.grid_width).fill(0));
+
+    for (const fireIncident of recentFireHistory) {
+        const timeElapsed = currentTime - fireIncident.timestamp;
+
+        // Only consider incidents within the time window
+        if (timeElapsed <= config.near_repeat_time_window) {
+            for (let cy = 0; cy < config.grid_height; cy++) {
+                for (let cx = 0; cx < config.grid_width; cx++) {
+                    const distance = Math.hypot(cx - fireIncident.x, cy - fireIncident.y);
+
+                    // Only consider cells within the spatial window
+                    if (distance <= config.near_repeat_spatial_window) {
+                        let riskBonus = config.near_repeat_initial_risk_bonus;
+
+                        // Apply time decay
+                        if (config.near_repeat_time_window > 0) {
+                            riskBonus *= (1 - timeElapsed / config.near_repeat_time_window);
+                        } else if (timeElapsed > 0) {
+                            riskBonus = 0; // Instant decay if window is 0 but time has passed
+                        }
+
+                        // Apply distance decay
+                        if (config.near_repeat_spatial_window > 0) {
+                            riskBonus *= (1 - distance / config.near_repeat_spatial_window);
+                        } else if (distance > 0) {
+                             riskBonus = 0; // Instant decay if window is 0 but distance is not
+                        }
+
+                        riskBonus = Math.max(0, riskBonus); // Risk bonus cannot be negative
+
+                        // Add bonus to the cell's risk
+                        nearRepeatRiskGrid[cy][cx] += riskBonus;
+                    }
+                }
+            }
+        }
+    }
+    return nearRepeatRiskGrid;
+}
+
 const getCongestionMultiplier = (time: number, scenario: Scenario): number => {
     const hour = Math.floor((time % 96) / 4); // 0-23
     let multiplier = 1.0; // No congestion
@@ -289,11 +331,11 @@ const moveAgent = (agent: Agent, grid: Cell[][], congestionMultiplier: number) =
          {
             baseSpeed = config.agent_vehicle_speed;
         } else if (agent.type === 'firefighter' && agent.state === 'extinguishing') {
-            // Firefighters move slower on foot at the scene (adjust multiplier as needed)
-             baseSpeed = config.agent_walk_speed * 1.5;
+            // Firefighters move on foot at the scene
+ baseSpeed = config.agent_walk_speed;
         } else {
             // Firefighters walking or idle (at station etc)
-             baseSpeed = config.agent_walk_speed;
+ baseSpeed = config.agent_walk_speed;
         }
     }
 
@@ -464,12 +506,27 @@ function updateFirefighterState(
       if (nearest) {
         const fireKey = `${nearest.x},${nearest.y}`;
         const path = findPathAStar({ x: ix, y: iy }, nearest, grid);
-        if (path) {
-          claimedFires.add(fireKey);                 // <-- reserve it **now**
-          agent.target = nearest;
-          agent.path   = path;
-          agent.state  = 'responding';
-          addEvent(`🚒 ${agent.id} dispatched to fire at (${fireKey}).`);
+        if (agent.state_timer === undefined || agent.state_timer <= 0) {
+            // Start dispatch process
+            agent.state_timer = config.firefighter_dispatch_delay;
+            addEvent(`🚒 ${agent.id} is preparing to respond to fire at (${fireKey}).`);
+        } else if (agent.state_timer > 0) {
+            // Decrement timer, agent is in dispatch/mobilization
+            agent.state_timer--;
+            if (agent.state_timer === 0) {
+                 // Dispatch complete, proceed to respond
+                const path = findPathAStar({ x: ix, y: iy }, nearest, grid);
+                if (path) {
+                  claimedFires.add(fireKey);                 // <-- reserve it **now**
+                  agent.target = nearest;
+                  agent.path   = path;
+                  agent.state  = 'responding';
+                  addEvent(`🚒 ${agent.id} dispatched to fire at (${fireKey}).`);
+                } else {
+                     // If pathfinding fails after delay, reset to idle
+                    agent.state = 'idle';
+                }
+            }
         }
       }
       break;
@@ -522,8 +579,7 @@ function updateFirefighterState(
   }
   return false;
 }
-
-function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], reportFire: (x: number, y: number) => void, addEvent: (message: string) => void) {
+function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], reportFire: (x: number, y: number) => void, addEvent: (message: string) => void, nearRepeatRiskGrid: number[][]) {
     const ix = Math.floor(agent.x);
     const iy = Math.floor(agent.y);
 
@@ -602,14 +658,15 @@ function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], rep
         // Evaluate sampled locations based on area risk and add some randomness
         potentialDestinations.forEach(dest => {
             const areaRisk = calculateAreaRisk(dest.x, dest.y, grid);
+            const nearRepeatRisk = nearRepeatRiskGrid[dest.y][dest.x];
             // Calculate a score: Higher risk (weighted) + some randomness (weighted) = higher chance of selection
-            const score = areaRisk * 100 + Math.random() * 5; // Adjust multipliers (100 and 5) as needed
-
+            const score = areaRisk * config.police_patrol_risk_weight + nearRepeatRiskGrid[dest.y][dest.x] * config.police_patrol_near_repeat_weight + Math.random() * config.police_patrol_random_weight;
             if (score > highestScore) {
                 highestScore = score;
                 bestDestination = dest;
             }
         });
+
 
         if (bestDestination) {
             // Find a path to the chosen high-risk area destination
@@ -904,6 +961,7 @@ function updateArsonistState(
 
         if (Math.random() < chance) {
             // --- Success ---
+ recentFireHistoryRef.current.push({ timestamp: currentTime, x: targetCell.x, y: targetCell.y });
             targetCell.fireLevel = 3.33;
             targetCell.fireIgnitionTime = currentTime;
 
@@ -984,6 +1042,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
   }>({ parks: [], shops: [] });
   const eventLocationRef = useRef<{x: number, y: number} | null>(null);
   const riotHotspotRef = useRef<{x: number, y: number} | null>(null);
+  const recentFireHistoryRef = useRef<{timestamp: number; x: number; y: number}[]>([]);
 
 
   const { toast } = useToast();
@@ -1077,6 +1136,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         const newEvents: SimEvent[] = [];
         const newReportedFires = new Set(reportedFires);
         const newClaimedFires = new Set(claimedFires);
+        const currentTime = time + 1;
         console.log(`👨‍🚒 reported fires:`, Array.from(reportedFires));
 
         const addEvent = (message: string) => {
@@ -1120,6 +1180,11 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         const newlyBurntOutCellKeys = new Set<string>();
 
         /*  🔥  GRID UPDATE – fire spread & burn-out  */
+
+        // Filter out old fire history
+ recentFireHistoryRef.current = recentFireHistoryRef.current.filter(fire => currentTime - fire.timestamp <= config.near_repeat_time_window);
+        const nearRepeatRiskGrid = calculateNearRepeatRiskGrid(newGrid, recentFireHistoryRef.current, currentTime);
+
         const BURN_OUT_TICKS = 10;
 
         burningCells.forEach(key => {
@@ -1244,7 +1309,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
 
         const survivingAgents: Agent[] = [];
         agentsToUpdate.forEach(agent => {
-            const ix = Math.floor(agent.x);
+             const ix = Math.floor(agent.x);
             const iy = Math.floor(agent.y);
             const currentCell = newGrid[iy]?.[ix];
 
@@ -1294,7 +1359,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
                   }
                   break;
                 case 'police':
-                    updatePoliceState(agent, newGrid, agentsToUpdate, reportFire, addEvent);
+                    updatePoliceState(agent, newGrid, agentsToUpdate, reportFire, addEvent, nearRepeatRiskGrid);
                     break;
                 case 'civilian':
                     updateCivilianBehavior(agent, agentsToUpdate, newGrid, scenario, currentTime, reportFire, locationCache.current, eventLocationRef.current, riotHotspotRef.current);
