@@ -815,6 +815,7 @@ function updateArsonistState(
             if (agent.profile) {
                 firesByProfileThisTick[agent.profile] = (firesByProfileThisTick[agent.profile] || 0) + 1;
             }
+            reportFire(targetCell.x, targetCell.y); // Report fire as soon as it's started by an arsonist
         }
         // On failure, the arsonist doesn't go on cooldown. They can try again next tick.
     } else {
@@ -978,7 +979,6 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         const newClaimedFires = new Set(claimedFires);
         console.log(`👨‍🚒 reported fires:`, Array.from(reportedFires));
 
-
         const addEvent = (message: string) => {
             newEvents.push({ id: crypto.randomUUID(), timestamp: currentTime, message });
         }
@@ -1059,6 +1059,12 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
                  if(Math.random() < 0.1 * effectiveFlammability) {
                     cell.fireLevel = Math.min(10, cell.fireLevel + 1);
                  }
+            }
+
+            // Report large fires even without alarms
+            if (cell.fireLevel >= 5 && !newReportedFires.has(key)) {
+                 addEvent(`Large fire detected at (${x}, ${y}).`); // Log event for visual detection
+                 reportFire(x, y); // Report it to the system
             }
 
             if (cell.fireLevel === 1 && cell.hasFireAlarm) {
