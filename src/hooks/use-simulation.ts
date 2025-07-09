@@ -21,7 +21,7 @@ const isWalkable = (x: number, y: number, grid: Cell[][], agentType: 'firefighte
     if (x < 0 || x >= config.grid_width || y < 0 || y >= config.grid_height || !grid[y]) return false;
     const cell = grid[y][x];
     if (!cell) return false;
-    // Updated safety rule: a cell is not walkable if it has a significant fire
+    // Updated safety rule: a cell is not walkable if it has a significant fire (level 3 or higher)
     if (cell.fireLevel > 3) return false;
     if (cell.cellType === 'ROAD' || cell.cellType === 'PARK') return true;
     if (cell.cellType === 'BUILDING' && (cell.buildingType === BuildingType.PARKING_LOT || cell.buildingType === BuildingType.MARKET_STALL || cell.buildingType === BuildingType.POOL)) return true;
@@ -202,6 +202,39 @@ const findRandomLocation = (grid: Cell[][], filter: (cell: Cell) => boolean): {x
     return fallbackCell ? { x: fallbackCell.x, y: fallbackCell.y } : null;
 };
 
+const calculateAreaRisk = (x: number, y: number, grid: Cell[][]): number => {
+    let totalRisk = 0;
+    let cellCount = 0;
+    const radius = 10; // Define a radius for area risk assessment (e.g., 10 cells)
+
+    for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && nx < config.grid_width && ny >= 0 && ny < config.grid_height) {
+                const cell = grid[ny]?.[nx];
+                if (cell) {
+                    // Consider arsonRisk, flammability, and negative controls
+                    let cellRisk = cell.arsonRisk || 0;
+                    cellRisk += cell.flammability * 0.5; // Add flammability as a factor
+                    // Add impact of negative controls
+                    for (const key in CONTROL_IMPACTS) {
+                         const controlKey = key as keyof typeof CONTROL_IMPACTS;
+                         // Only consider negative controls for increasing risk here
+                         if (CONTROL_IMPACTS[controlKey].risk > 0 && cell[controlKey]) {
+                             cellRisk += CONTROL_IMPACTS[controlKey].risk;
+                         }
+                    }
+                    totalRisk += cellRisk;
+                    cellCount++;
+                }
+            }
+        }
+    }
+    // Return average risk in the area, or 0 if no cells found
+    return cellCount > 0 ? totalRisk / cellCount : 0;
+};
+
 const getCongestionMultiplier = (time: number, scenario: Scenario): number => {
     const hour = Math.floor((time % 96) / 4); // 0-23
     let multiplier = 1.0; // No congestion
@@ -222,8 +255,6 @@ const getCongestionMultiplier = (time: number, scenario: Scenario): number => {
 
     return multiplier;
 };
-
-const FIREFIGHTER_SPEED_MULTIPLIER = 4;
 
 const moveAgent = (agent: Agent, grid: Cell[][], congestionMultiplier: number) => {
     if (!agent.path || agent.path.length === 0) return;
@@ -251,15 +282,22 @@ const moveAgent = (agent: Agent, grid: Cell[][], congestionMultiplier: number) =
     const distance = Math.hypot(dx, dy);
 
     // Movement time: 10 minutes per 5 cells = 2 min/cell. 1 tick = 15 min. Speed = 15/2 = 7.5 cells/tick.
-    // 2️⃣  replace the baseSpeed computation inside moveAgent
-    const baseSpeed =
-      agent.type === 'firefighter'
-        ? (
-            agent.state === 'responding'
-              ? 7.5 * FIREFIGHTER_SPEED_MULTIPLIER
-              : config.agent_speed * FIREFIGHTER_SPEED_MULTIPLIER
-          )
-        : config.agent_speed;
+    let baseSpeed = config.agent_walk_speed;
+
+    if (agent.type === 'police' || agent.type === 'firefighter') {
+        // Police are always assumed to be in vehicles for movement
+        // Firefighters use vehicles when responding to a fire or returning to station
+        if (agent.type === 'police' || (agent.type === 'firefighter' && (agent.state === 'responding' || agent.state === 'returning')))
+         {
+            baseSpeed = config.agent_vehicle_speed;
+        } else if (agent.type === 'firefighter' && agent.state === 'extinguishing') {
+            // Firefighters move slower on foot at the scene (adjust multiplier as needed)
+             baseSpeed = config.agent_walk_speed * 1.5;
+        } else {
+            // Firefighters walking or idle (at station etc)
+             baseSpeed = config.agent_walk_speed;
+        }
+    }
 
     // the rest of moveAgent stays exactly the same ↓
     const speed = baseSpeed * congestionMultiplier;
@@ -414,8 +452,9 @@ function updateFirefighterState(
       let nearest: { x: number; y: number } | null = null;
       let best = Infinity;
 
+      // Only target fires with a level greater than 3
       reportedFires.forEach((key) => {
-        if (claimedFires.has(key)) return;           // someone else already going
+        if (claimedFires.has(key) || grid[key.split(',').map(Number)[1]]?.[key.split(',').map(Number)[0]]?.fireLevel <= 3) return; // someone else already going or fire too small
         const [fx, fy] = key.split(',').map(Number);
         const d = Math.hypot(ix - fx, iy - fy);
         if (d < best) {
@@ -490,6 +529,35 @@ function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], rep
     const ix = Math.floor(agent.x);
     const iy = Math.floor(agent.y);
 
+    // --- Police Small Fire Extinguishing ---
+    const currentCell = grid[iy]?.[ix];
+    if (agent.state !== 'apprehending' && currentCell && currentCell.fireLevel > 0 && currentCell.fireLevel < 2) { // Check for small fire (level 1)
+        agent.state = 'extinguishing_small_fire';
+        agent.state_timer = 2; // Short timer
+        agent.path = []; // Stop any current movement
+        addEvent(`A police officer is attempting to extinguish a small fire at (${ix}, ${iy}).`);
+        return; // Police officer is busy
+    }
+
+    if (agent.state === 'extinguishing_small_fire') {
+        agent.state_timer = (agent.state_timer ?? 0) - 1;
+        const currentCell = grid[iy]?.[ix];
+         if (agent.state_timer <= 0 || !currentCell || currentCell.fireLevel >= 2 || currentCell.isBurntOut) {
+             // Extinguishing finished, failed, fire grew, or burnt out
+            if (currentCell && currentCell.fireLevel > 0 && currentCell.fireLevel < 2 && !currentCell.isBurntOut) {
+                // Successful extinguishment
+                currentCell.fireLevel = 0;
+                currentCell.fireIgnitionTime = null;
+                 const k = `${ix},${iy}`;
+                reportFire(ix, iy); // Report as extinguished
+                addEvent(`A police officer extinguished a small fire at (${ix}, ${iy}).`);
+            }
+            agent.state = 'patrolling'; // Return to patrolling
+            agent.path = []; // Ensure path is clear
+        }
+        return; // Police officer is busy extinguishing
+    }
+
     if (agent.state === 'apprehending') {
       // If apprehending, stay put for a short time to "process" the arrest, then go back to patrolling.
       agent.state_timer = (agent.state_timer ?? 0) - 1;
@@ -516,11 +584,47 @@ function updatePoliceState(agent: Agent, grid: Cell[][], allAgents: Agent[], rep
         return; // End turn after making an arrest
     }
 
-    // Normal patrolling if no one to arrest
+    // Predictive Policing Patrolling: Prioritize high-risk areas
     if (!agent.path || agent.path.length === 0) {
-        const destination = findRandomLocation(grid, (cell) => cell.roadType === 'HIGHWAY' || cell.roadType === 'MAIN_ROAD');
-        if (destination) {
-            agent.path = findPathAStar({x: ix, y: iy}, destination, grid) || [];
+        let bestDestination: { x: number; y: number } | null = null;
+        let highestRisk = -Infinity;
+        const patrolAreaScanRadius = 30; // Define how far police look for patrol areas
+
+        // Scan a wider area for potential patrol destinations
+        for (let dx = -patrolAreaScanRadius; dx <= patrolAreaScanRadius; dx++) {
+            for (let dy = -patrolAreaScanRadius; dy <= patrolAreaScanRadius; dy++) {
+                const nx = ix + dx;
+                const ny = iy + dy;
+
+                // Ensure the potential destination is within grid bounds and is walkable
+                if (nx >= 0 && nx < config.grid_width && ny >= 0 && ny < config.grid_height && grid[ny]?.[nx] && isWalkable(nx, ny, grid)) {
+                    // Calculate the risk score for this area
+                    const areaRisk = calculateAreaRisk(nx, ny, grid);
+
+                    // With a certain probability, favor higher risk areas
+                    // Using a simple probability based on risk: higher risk = higher chance of being chosen
+                    // Also add a small random chance to explore lower risk areas
+                    const selectionChance = areaRisk * 10 + Math.random() * 0.1; // Adjust multipliers as needed
+
+                    if (selectionChance > highestRisk) {
+                        highestRisk = selectionChance;
+                        bestDestination = { x: nx, y: ny };
+                    }
+                }
+            }
+        }
+
+        if (bestDestination) {
+            // Find a path to the chosen high-risk area destination
+            agent.path = findPathAStar({ x: ix, y: iy }, bestDestination, grid) || [];
+            agent.state = 'patrolling'; // Keep state as patrolling
+        } else {
+            // Fallback to a random location if no suitable high-risk area found
+             const fallbackDestination = findRandomLocation(grid, (cell) => isWalkable(cell.x, cell.y, grid));
+             if (fallbackDestination) {
+                 agent.path = findPathAStar({x: ix, y: iy}, fallbackDestination, grid) || [];
+                 agent.state = 'patrolling';
+             }
         }
         agent.state = 'patrolling';
     }
@@ -582,7 +686,9 @@ function updateCivilianBehavior(
         }
     }
 
-    if (nearbyFires.length > 0) {
+    // Filter nearby fires for those that are threatening (level 3 or higher)
+    const threateningFires = nearbyFires.filter(f => grid[f.y]?.[f.x]?.fireLevel >= 3);
+    if (threateningFires.length > 0) {
         if (agent.state !== 'fleeing') {
              agent.state = 'fleeing';
         }

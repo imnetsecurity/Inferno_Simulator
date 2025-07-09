@@ -232,7 +232,8 @@ export const config = {
     riot_transform_prob_multiplier: 25,
     civilian_to_arsonist_prob_base: 0.00002,
 
-    agent_speed: 1.0,
+    agent_walk_speed: 65.0,
+    agent_vehicle_speed: 375.0,
 
     color_road: "rgb(60, 60, 60)",
     color_street: "rgb(255, 255, 255)",
