@@ -1130,7 +1130,6 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         let buildingsDestroyedThisStep = 0;
         let casualtiesThisTick = 0;
 		const firesByProfileThisTick: Partial<Record<ArsonistProfileType, number>> = {};
-        const currentTime = time + 1;
 
         // Set to track events added in this tick to prevent duplicates
         const eventsThisTick = new Set<string>();
