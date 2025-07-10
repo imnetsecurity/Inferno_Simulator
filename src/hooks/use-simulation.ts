@@ -1126,7 +1126,6 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         let agentsToProcess = structuredClone(agents);
         const newBurningCells = new Set(burningCells);
         const currentTime = time + 1;
-        setCongestion(congestionMultiplier);
 
         let buildingsDestroyedThisStep = 0;
         let casualtiesThisTick = 0;
