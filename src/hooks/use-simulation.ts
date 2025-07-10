@@ -1124,15 +1124,12 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
       setGrid(prevGrid => {
         const newGrid = structuredClone(prevGrid);
         let agentsToProcess = structuredClone(agents);
+        const newEvents: SimEvent[] = [];
         const newBurningCells = new Set(burningCells);
         const currentTime = time + 1;
-
         let buildingsDestroyedThisStep = 0;
         let casualtiesThisTick = 0;
-        let firesExtinguishedThisTick = 0;
 		const firesByProfileThisTick: Partial<Record<ArsonistProfileType, number>> = {};
-        const newReportedFires = new Set(reportedFires);
-        const newClaimedFires = new Set(claimedFires);
         const currentTime = time + 1;
 
         // Set to track events added in this tick to prevent duplicates
@@ -1285,6 +1282,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         let agentsAfterCollapse = [...agentsToProcess];
         if (newlyBurntOutCellKeys.size > 0) {
             const burntOutCoords = Array.from(newlyBurntOutCellKeys).map(key => {
+
                 const [x,y] = key.split(',').map(Number);
                 return {x,y};
             });
@@ -1305,6 +1303,7 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
 
         // Apply scenario-driven transformations first
         let agentsToUpdate = agentsAfterCollapse.map(agent => handleScenarioDrivenBehavior(agent, scenario, riotHotspotRef.current, addEvent));
+        let firesExtinguishedThisTick = 0;
 
         const survivingAgents: Agent[] = [];
         agentsToUpdate.forEach(agent => {
