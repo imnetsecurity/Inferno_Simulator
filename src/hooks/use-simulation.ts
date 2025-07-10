@@ -1131,7 +1131,6 @@ export function useSimulation({ scenario, agentCounts, arsonistConfig, resetTrig
         let casualtiesThisTick = 0;
         let firesExtinguishedThisTick = 0;
 		const firesByProfileThisTick: Partial<Record<ArsonistProfileType, number>> = {};
-        const newEvents: SimEvent[] = [];
         const newReportedFires = new Set(reportedFires);
         const newClaimedFires = new Set(claimedFires);
         const currentTime = time + 1;
